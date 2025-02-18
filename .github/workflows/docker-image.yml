@@ -1,0 +1,99 @@
+name: Deploy Docker to EC2 (Amazon Linux)
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    name: Deploy Docker App on Amazon Linux EC2
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set permissions for SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_KEY }}" | tr -d '\r' > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.HOST_DNS }} >> ~/.ssh/known_hosts
+
+      - name: Build Docker image
+        run: |
+          docker build -t ${{ secrets.DOCKER_IMAGE_NAME }}:latest .
+          docker save -o app.tar ${{ secrets.DOCKER_IMAGE_NAME }}:latest
+
+      - name: Check if app.tar exists
+        run: |
+          if [ ! -f "app.tar" ]; then
+            echo "❌ ERROR: El archivo app.tar no existe."
+            exit 1
+          else
+            echo "✅ Archivo app.tar encontrado."
+          fi
+
+      - name: Set permissions for app.tar
+        run: |
+          sudo chmod 644 app.tar
+          ls -lah app.tar  # Verificar permisos
+
+      - name: Transfer Docker image to EC2
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ secrets.HOST_DNS }}
+          username: ${{ secrets.USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          source: "app.tar"
+          target: "${{ secrets.TARGET_DIR }}"
+          rm: true  # Elimina archivos previos antes de copiar
+
+      - name: Run Docker container on EC2
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.HOST_DNS }}
+          username: ${{ secrets.USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            echo "📌 Verificando e instalando Docker en Amazon Linux EC2..."
+
+            # Instalar Docker en Amazon Linux
+            sudo yum update -y
+            sudo amazon-linux-extras enable docker
+            sudo yum install -y docker
+
+            # Iniciar Docker y habilitarlo en el arranque
+            sudo systemctl start docker
+            sudo systemctl enable docker
+
+            # Agregar usuario ec2-user al grupo docker (evita uso de sudo en cada comando)
+            sudo usermod -aG docker ec2-user
+
+            echo "📌 Otorgando permisos al directorio destino..."
+            sudo chmod -R 777 ${{ secrets.TARGET_DIR }}
+
+            echo "📌 Cargando la imagen Docker..."
+            sudo docker load -i ${{ secrets.TARGET_DIR }}/app.tar
+
+            echo "📌 Verificando si el contenedor ya existe..."
+            if sudo docker ps -a --format '{{.Names}}' | grep -q "^${{ secrets.DOCKER_IMAGE_NAME }}$"; then
+              echo "📌 Deteniendo y eliminando el contenedor existente..."
+              sudo docker stop ${{ secrets.DOCKER_IMAGE_NAME }} || true
+              sudo docker rm ${{ secrets.DOCKER_IMAGE_NAME }} || true
+            else
+              echo "📌 No hay contenedor antiguo. Continuando con el despliegue..."
+            fi
+
+            echo "📌 Iniciando el nuevo contenedor con variables de entorno..."
+            sudo docker run -d \
+              --name ${{ secrets.DOCKER_IMAGE_NAME }} \
+              -p 10031:10031 \
+              -e SPRING_NEO4J_URI=${{ secrets.SPRING_NEO4J_URI }} \
+              -e SPRING_NEO4J_AUTHENTICATION_USERNAME=${{ secrets.SPRING_NEO4J_AUTHENTICATION_USERNAME }} \
+              -e SPRING_NEO4J_AUTHENTICATION_PASSWORD=${{ secrets.SPRING_NEO4J_AUTHENTICATION_PASSWORD }} \
+              -e SPRING_KAFKA_BOOTSTRAP-SERVERS=${{ secrets.SPRING_KAFKA_BOOTSTRAP_SERVERS }} \
+              ${{ secrets.DOCKER_IMAGE_NAME }}:latest
+
+            echo "✅ Despliegue completado con Docker en Amazon Linux 🚀"
