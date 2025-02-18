@@ -1,0 +1,21 @@
+spring:
+  application:
+    name: role-command-service
+  neo4j:
+    uri: bolt://localhost:7687
+    authentication:
+      username: neo4j
+      password: 6154277353
+  kafka:
+    bootstrap-servers: localhost:10094
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        spring.json.add.type.headers: true
+server:
+  address: '0.0.0.0'
+  port: 10031
+env:
+  kafka:
+    topicEvent: role-event
